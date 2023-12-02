@@ -34,40 +34,71 @@ else
 fi
 
 # Step 2: fetch results
-per_page=100
-echo "Fetching PRs for ${OWNER}/${REPO}"
-response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls -f state=closed -F per_page=$per_page)
-pr_count=$(jq length <<< $response)
-echo "Fetched ${pr_count} PRs"
 
 # Step 3: fetch reviews per PR & compile data
 durations=( )
 review_latencies=( )
 review_counts=( )
 
-for pr in $(echo $response | jq -c '.[] | { number: .number, created_at: .created_at, merged_at: .merged_at }') # Use jq to parse the JSON response into an array
+earliest_to_include=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" 2023-6-30T11:59:59Z +%s) # End of Q2 2023
+earliest_seen=$(date +%s) # Now, to start
+
+page=1
+per_page=30
+pr_count=0
+skipped_count=0
+
+printf "\nFetching PRs for ${OWNER}/${REPO}\n"
+while [ $earliest_seen -gt $earliest_to_include ];
 do
-  number=$(echo "$pr" | jq -r .number)
-  created_at=$(echo "$pr" | jq -r .created_at)
-  merged_at=$(echo "$pr" | jq -r .merged_at)
+  echo "Fetching page ${page} with page size ${per_page}"
+  response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls -f state=closed -F per_page=$per_page -F page=$page)
+  echo "Fetched $(jq length <<< $response) results"
 
-  if [ $merged_at == 'null' ]; then
-    echo "PR $number was not been merged; skipping."
-    break
-  fi
+  for pr in $(echo $response | jq -c '.[] | { number: .number, created_at: .created_at, merged_at: .merged_at }') # Use jq to parse the JSON response into an array
+  do
+    number=$(echo "$pr" | jq -r .number)
+    created_at=$(echo "$pr" | jq -r .created_at)
+    merged_at=$(echo "$pr" | jq -r .merged_at)
 
-  duration=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${merged_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
-  durations+=( $duration )
+    earliest_seen=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s)
+    # TODO: Do we need to duplicate this condition?
+    if [ ! $earliest_seen -gt $earliest_to_include ]; then
+      # Stop collecting data
+      break
+    fi
 
-  review_response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls/${number}/reviews)
+    if [ $merged_at == 'null' ]; then
+      echo "PR $number was not been merged; skipping."
+      skipped_count=$(( $skipped_count + 1 ))
+      break
+    fi
 
-  first_reviewed_at=$(echo $review_response | jq -r '.[-1].submitted_at')
-  review_latency=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${first_reviewed_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
-  review_latencies+=( $review_latency )
+    duration=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${merged_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
+    durations+=( $duration )
 
-  review_count=$(jq length <<< $review_response)
-  review_counts+=( $review_count )
+    review_response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls/${number}/reviews -F per_page=100)
+
+    first_reviewed_at=$(echo $review_response | jq -r '.[-1].submitted_at')
+    if [ $first_reviewed_at == 'null' ]; then
+      echo "No valid review(s) found for $number; skipping."
+      skipped_count=$(( $skipped_count + 1 ))
+      break
+    fi
+    review_latency=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${first_reviewed_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
+    review_latencies+=( $review_latency )
+
+    review_count=$(jq length <<< $review_response)
+    review_counts+=( $review_count )
+
+    pr_count=$(( $pr_count + 1 ))
+  done
+
+  # Increment page number after all results have been parsed
+  page=$(( $page + 1 ))
 done
+
+printf "\nIncluded ${pr_count} most recent PRs; ${skipped_count} are excluded from the following metrics.\n"
 
 # Step 4: report results
 function round() {
