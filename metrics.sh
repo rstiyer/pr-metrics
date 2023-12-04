@@ -7,14 +7,17 @@ while getopts 'd:n:' flag; do
   esac
 done
 
-if [ "$#" -lt 2 ]; then
+# To check the positional arguments, remove the processed options (if present)
+shift $(($OPTIND - 1))
+
+if [ "$#" -ne 2 ]; then
   echo "Usage: metrics.sh (repo-owner) (repo-name)"
   echo "   Ex: metrics.sh NPXInnovation echo-client"
   exit 1
 fi
 
-OWNER=${@:$OPTIND:1}
-REPO=${@:$OPTIND+1:1}
+OWNER=$1
+REPO=$2
 
 # Step 0: check that requisite libraries are installed
 if ! command -v gh >/dev/null 2>&1; then
