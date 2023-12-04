@@ -107,7 +107,7 @@ do
   page=$(( $page + 1 ))
 done
 
-printf "\nIncluded ${pr_count} PRs merged since $(date -j -f "%s" $earliest_to_include +"%FT%TZ"); ${skipped_count} were excluded from the following metrics.\n"
+printf "\nIncluded ${pr_count} PRs merged since $(date -j -f "%s" $earliest_seen +"%FT%TZ"); ${skipped_count} were excluded from the following metrics.\n"
 
 # Step 4: report results
 function round() {
