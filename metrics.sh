@@ -55,7 +55,7 @@ page=1
 per_page=30
 pr_count=0
 skipped_count=0
-cutoff=${count:-100}
+cutoff=${count:-1000}
 
 printf "\nFetching PRs for ${OWNER}/${REPO}\n"
 while [ $earliest_seen -gt $earliest_to_include ] && [ $pr_count -lt $cutoff ];
