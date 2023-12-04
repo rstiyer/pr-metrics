@@ -1,13 +1,20 @@
 #! /usr/bin/env bash
 
-if [ "$#" -ne 2 ]; then
+while getopts 'd:n:' flag; do
+  case "${flag}" in
+    d) start_date="${OPTARG}" ;;
+    n) count="${OPTARG}" ;;
+  esac
+done
+
+if [ "$#" -lt 2 ]; then
   echo "Usage: metrics.sh (repo-owner) (repo-name)"
   echo "   Ex: metrics.sh NPXInnovation echo-client"
   exit 1
 fi
 
-OWNER=$1
-REPO=$2
+OWNER=${@:$OPTIND:1}
+REPO=${@:$OPTIND+1:1}
 
 # Step 0: check that requisite libraries are installed
 if ! command -v gh >/dev/null 2>&1; then
@@ -34,22 +41,21 @@ else
 fi
 
 # Step 2: fetch results
-
-# Step 3: fetch reviews per PR & compile data
 durations=( )
 review_latencies=( )
 review_counts=( )
 
-earliest_to_include=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" 2023-6-30T11:59:59Z +%s) # End of Q2 2023
+earliest_to_include=$(date -j -f "%FT%TZ" ${start_date:-2023-6-30T11:59:59Z} +%s) # End of Q2 2023
 earliest_seen=$(date +%s) # Now, to start
 
 page=1
 per_page=30
 pr_count=0
 skipped_count=0
+cutoff=${count:-100}
 
 printf "\nFetching PRs for ${OWNER}/${REPO}\n"
-while [ $earliest_seen -gt $earliest_to_include ];
+while [ $earliest_seen -gt $earliest_to_include ] && [ $pr_count -lt $cutoff ];
 do
   echo "Fetching page ${page} with page size ${per_page}"
   response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls -f state=closed -F per_page=$per_page -F page=$page)
@@ -61,9 +67,9 @@ do
     created_at=$(echo "$pr" | jq -r .created_at)
     merged_at=$(echo "$pr" | jq -r .merged_at)
 
-    earliest_seen=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s)
+    earliest_seen=$(date -j -f "%FT%TZ" "${created_at}" +%s)
     # TODO: Do we need to duplicate this condition?
-    if [ ! $earliest_seen -gt $earliest_to_include ]; then
+    if [ ! $earliest_seen -gt $earliest_to_include ] || [ $pr_count -eq $cutoff ]; then
       # Stop collecting data
       break
     fi
@@ -71,34 +77,34 @@ do
     if [ $merged_at == 'null' ]; then
       echo "PR $number was not been merged; skipping."
       skipped_count=$(( $skipped_count + 1 ))
-      break
+      continue
     fi
 
-    duration=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${merged_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
+    pr_count=$(( $pr_count + 1 ))
+    duration=$(( $(date -j -f "%FT%TZ" "${merged_at}" +%s) - $(date -j -f "%FT%TZ" "${created_at}" +%s) ))
     durations+=( $duration )
 
+    # Step 3: fetch reviews per PR & compile data
     review_response=$(gh api -H "Accept: application/vnd.github+json" --method GET /repos/${OWNER}/${REPO}/pulls/${number}/reviews -F per_page=100)
 
     first_reviewed_at=$(echo $review_response | jq -r '.[-1].submitted_at')
     if [ $first_reviewed_at == 'null' ]; then
       echo "No valid review(s) found for $number; skipping."
       skipped_count=$(( $skipped_count + 1 ))
-      break
+      continue
     fi
-    review_latency=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${first_reviewed_at}" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${created_at}" +%s) ))
+    review_latency=$(( $(date -j -f "%FT%TZ" "${first_reviewed_at}" +%s) - $(date -j -f "%FT%TZ" "${created_at}" +%s) ))
     review_latencies+=( $review_latency )
 
     review_count=$(jq length <<< $review_response)
     review_counts+=( $review_count )
-
-    pr_count=$(( $pr_count + 1 ))
   done
 
   # Increment page number after all results have been parsed
   page=$(( $page + 1 ))
 done
 
-printf "\nIncluded ${pr_count} most recent PRs; ${skipped_count} are excluded from the following metrics.\n"
+printf "\nIncluded ${pr_count} PRs merged since $(date -j -f "%s" $earliest_to_include +"%FT%TZ"); ${skipped_count} were excluded from the following metrics.\n"
 
 # Step 4: report results
 function round() {
